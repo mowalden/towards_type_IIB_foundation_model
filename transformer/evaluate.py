@@ -130,7 +130,7 @@ if args.nflux:
 
 if args.gs_inv:
     prompt_with_gs_inv = []
-    aux_prompts = np.arange(4.0)
+    aux_prompts = np.array([4.0])
     for prompt in prompts:
         prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
         prompt = np.concatenate(
