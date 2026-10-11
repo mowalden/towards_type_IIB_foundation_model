@@ -52,17 +52,24 @@ assert (
 ), "Invalid option set. Needs to be --mod --nflux --gs_inv OR --w0."
 
 if args.only_evaluate:
-    assert(args.samples_file is not None, "--only_evaluate is set but --samples_file is None.")
-if args.only_sample: 
-    assert(args.samples_file is not None, "--only_sample is set but --samples_file is None.")
-    if os.path.isfile(
-        cwd
-        + f"/data/samples/{args.samples_file}.p"
-    ):
-        raise(FileExistsError(f"--samples_file is {args.samples_file} but file already exists."))
+    assert (
+        args.samples_file is not None
+    ), "--only_evaluate is set but --samples_file is None."
+    
+if args.only_sample:
+    assert (
+        args.samples_file is not None
+    ), "--only_sample is set but --samples_file is None."
+    
+    if os.path.isfile(cwd + f"/data/samples/{args.samples_file}.p"):
+        raise (
+            FileExistsError(
+                f"--samples_file is {args.samples_file} but file already exists."
+            )
+        )
 
 # Configure JAX compilation cache
-#jax.config.update("jax_compilation_cache_max_size", int(3e10))
+# jax.config.update("jax_compilation_cache_max_size", int(3e10))
 
 ###################
 #   DEFINITIONS   #
@@ -185,14 +192,10 @@ split_tokens = ["<M_START>", "<T_START>"]
 
 if args.only_evaluate:
     assert not args.only_sample, "Both only_evaluate and only_sample were set to True."
-    if os.path.isfile(
-        cwd
-        + f"/data/samples/{args.samples_file}.p"
-    ):
+    if os.path.isfile(cwd + f"/data/samples/{args.samples_file}.p"):
         samples = pickle.load(
             open(
-                cwd
-                + f"/data/samples/{args.samples_file}.p",
+                cwd + f"/data/samples/{args.samples_file}.p",
                 "rb",
             )
         )
@@ -222,14 +225,15 @@ else:
     jax.config.update("jax_enable_x64", True)
     samples = process_samples(samples_lst, tokenizer, conds, split_tokens)
     time1 = time.time()
-    print(f"Sampling time in seconds (including processing): {np.round(time1-time0, 1)}")
+    print(
+        f"Sampling time in seconds (including processing): {np.round(time1-time0, 1)}"
+    )
 if args.only_sample:
     print(f"Saving...")
     pickle.dump(
         samples,
         open(
-            cwd
-            + f"/data/samples/{args.samples_file}.p",
+            cwd + f"/data/samples/{args.samples_file}.p",
             "wb",
         ),
     )
@@ -285,9 +289,7 @@ for k in range(len(all_hodge_pairs)):
             out["geometry"] = geometry_key
             # Prepare model
             model_ID = geometry_log[geometry_key]["model_ID"]
-            model = jvc.FluxVacuaFinder(
-                h12=h12, model_ID=model_ID, maximum_degree=10
-            )
+            model = jvc.FluxVacuaFinder(h12=h12, model_ID=model_ID, maximum_degree=10)
             # Needed for compatibility with older checkpoints
             if args.RUN_ID <= 35:
                 model = to_old_a_matrix(model)
@@ -446,5 +448,3 @@ if args.single:
 
 time1 = time.time()
 print(f"Evaluation time in seconds: {np.round(time1-time0, 1)}")
-
-
