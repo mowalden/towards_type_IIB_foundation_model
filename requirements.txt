@@ -1,0 +1,17 @@
+cytools==1.4.12
+flax==0.12.7
+flint==0.0.1
+gurobipy==13.0.2
+jax==0.10.1
+jaxpolylog==0.3.0
+jaxvacua @ git+https://github.com/StringJAX/jaxvacua.git@b8b5a52911b5886d0a2091966c03b8a98f082663#egg=jaxvacua
+numpy==2.5.4
+optax==0.2.8
+orbax==0.1.9
+pandas==3.0.6
+scipy==1.18.1
+seaborn==0.13.2
+stringjax_tools==0.1.0
+thread==2.0.6
+torch==2.12.0
+tqdm==4.68.2
