@@ -1,0 +1,590 @@
+from jax_transformer.utils import sample
+from evaluation_scripts.evaluation_utils import *
+from evaluation_scripts.output_utils import *
+import os
+import jax
+import jax.numpy as jnp
+import pickle
+from data_scripts.tokenizer_utils import int_to_token
+import numpy as np
+from tqdm import tqdm
+import jaxvacua as jvc  # type: ignore
+from data_scripts.tokenizer_utils import (
+    hodge_numbers_to_token,
+    int_nums_to_token,
+    a_matrix_to_token,
+    b_vector_to_token,
+    chi_to_token,
+)
+import argparse
+import warnings
+import seaborn as sns
+import pandas as pd
+import time
+
+warnings.filterwarnings("ignore")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--RUN_ID", type=int)
+parser.add_argument("--load_ckpt", type=str)
+parser.add_argument("--mod", action="store_true")
+parser.add_argument("--single", action="store_true")
+parser.add_argument("--topo", action="store_true")
+parser.add_argument("--nflux", action="store_true")
+parser.add_argument("--w0", action="store_true")
+parser.add_argument("--gs_inv", action="store_true")
+parser.add_argument("--num_samples", type=int, default=1000)
+parser.add_argument("--tol", type=float, default=1e-10)
+parser.add_argument("--sampling_temp", type=float, default=0.6)
+parser.add_argument("--discr", type=float, default=10.0)
+parser.add_argument("--only_sample", action="store_true")
+parser.add_argument("--only_evaluate", action="store_true")
+parser.add_argument("--only_plot", action="store_true")
+parser.add_argument("--produce_latex", action="store_true")
+parser.add_argument("--verbose", action="store_true")
+parser.add_argument("--use_newton", action="store_true")
+parser.add_argument("--save_valid", action="store_true")
+parser.add_argument("--debug", action="store_true")
+parser.add_argument("--debug_deep", action="store_true")
+parser.add_argument("--plot_trajectory", action="store_true")
+
+args = parser.parse_args()
+
+assert (
+    args.RUN_ID is not None and args.load_ckpt is not None
+), "--RUN_ID and --load_ckpt always have to be set."
+assert (
+    np.sum([args.mod, args.topo, args.nflux, args.w0, args.gs_inv]) == 1
+), "Invalid option set. Needs to be --mod --topo --nflux --gs_inv OR --w0."
+
+if args.plot_trajectory:
+    args.single = True
+
+# Configure JAX compilation cache
+#jax.config.update("jax_compilation_cache_max_size", int(3e10))
+
+###################
+#   DEFINITIONS   #
+###################
+cwd = os.getcwd()
+geometry_log_path = cwd + "/data/data_multiple/geometry_log_degree_10.p"
+
+use_scipy = not args.use_newton
+
+
+# Ensure compatibility with older checkpoints
+if "GRPO" in args.load_ckpt:
+    override_opt = True
+    GRPO_ID = args.load_ckpt.split("/")[0].split("_")[-1]
+else:
+    override_opt = False
+    GRPO_ID = None
+config = load_config(args.RUN_ID, cwd)
+state, model, tokenizer = load_model_from_config(
+    args.RUN_ID, config, args.load_ckpt, cwd, override_opt=override_opt, GRPO_ID=GRPO_ID
+)
+max_len = np.min([80, model.max_len_out])
+
+# Set prompts
+all_hodge_pairs = np.array(
+    [
+        [[2, 120], [2, 128], [2, 132], [2, 144], [2, 272]],
+        [[3, 99], [3, 107], [3, 115], [3, 119], [3, 243]],
+        [[4, 98], [4, 118], [4, 122], [4, 130], [4, 142]],
+        [[5, 89], [5, 149], [5, 153], [5, 165], [5, 213]],
+    ]
+)
+
+
+prompts = all_hodge_pairs.reshape(-1, 2)
+
+# Load data
+train_data_file = "_".join(
+    config["train_data_flux"].split("/")[-1].split(".")[0].split("_")[2:]
+)
+h12_lst = all_hodge_pairs[:, 0, 0]
+raw_data_paths = {
+    h12: cwd + f"/data/data_multiple/train_data_raw_{train_data_file}_{h12}.npy"
+    for h12 in h12_lst
+}
+with open(geometry_log_path, "rb") as f:
+    geometry_log = pickle.load(f)
+
+if args.w0:
+    assert (
+        not args.produce_latex
+    ), "--w0 and produce_latex were set. Not yet supported for --w0."
+    prompt_with_w0 = []
+    # aux_prompts = np.array([0.1, 2.1, 4.1, 6.1])
+    aux_prompts = np.array([4.4])
+    # aux_prompts = np.arange(.1, 6.2, step=.1)
+    for prompt in prompts:
+        prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
+        prompt = np.concatenate(
+            [prompt, np.round(args.discr * aux_prompts)[:, None].astype(np.int16)],
+            axis=-1,
+        )
+        prompt_with_w0.append(prompt)
+    prompts = np.concatenate(prompt_with_w0, axis=0)
+
+if args.nflux:
+    assert (
+        not args.produce_latex
+    ), "--nflux and produce_latex were set. Not yet supported for --nflux."
+    prompt_with_nflux = []
+    aux_prompts_len = []
+    for prompt in prompts:
+        geometry_key = f"{prompt[0]} {prompt[1]}"
+        h12 = prompt[0]
+        model_ID = geometry_log[geometry_key]["model_ID"]
+        jvc_model = jvc.FluxVacuaFinder(h12=h12, model_ID=model_ID, maximum_degree=10)
+        Q3 = jvc_model.Q()
+        # aux_prompts = np.array([Q3 // 4, Q3 // 2, Q3 // 4 * 3, Q3])
+        aux_prompts = np.array([1, 20, 40])
+        # aux_prompts = np.arange(1, Q3+1)
+        aux_prompts_len.append(len(aux_prompts))
+        prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
+        prompt = np.concatenate([prompt, aux_prompts[:, None]], axis=-1)
+        prompt_with_nflux.append(prompt)
+    prompts = np.concatenate(prompt_with_nflux, axis=0)
+
+if args.gs_inv:
+    assert (
+        not args.produce_latex
+    ), "--gs_inv and produce_latex were set. Not yet supported for --gs_inv."
+    prompt_with_gs_inv = []
+    # aux_prompts = np.array([1.0, 2.5, 4.5, 6.0])
+    aux_prompts = np.arange(1.0, 6.2, step=0.1)
+    for prompt in prompts:
+        prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
+        prompt = np.concatenate(
+            [prompt, np.round(args.discr * aux_prompts)[:, None].astype(np.int16)],
+            axis=-1,
+        )
+        prompt_with_gs_inv.append(prompt)
+    prompts = np.concatenate(prompt_with_gs_inv, axis=0)
+
+
+# Tokenize prompts
+if args.topo:
+    base = config["base"]
+    prompts_tok = []
+    for pair in prompts:
+        model_jvc = jvc.FluxVacuaFinder(
+            h12=pair[0],
+            model_ID=geometry_log[f"{pair[0]} {pair[1]}"]["model_ID"],
+            maximum_degree=10,
+        )
+        int_nums = model_jvc.periods.kappa_tilde_sparse
+        a_matrix = model_jvc.periods.a_matrix
+        b_vector = model_jvc.periods.b_vector
+        chi = model_jvc.periods.chi
+        hodge_pair = hodge_numbers_to_token(pair, base)
+        int_nums = int_nums_to_token(int_nums, base)
+        a_matrix = a_matrix_to_token(2 * a_matrix.flatten(), base)
+        b_vector = b_vector_to_token(12 * b_vector, base)
+        chi = chi_to_token(chi)
+        prompt = np.concatenate([hodge_pair, int_nums, a_matrix, b_vector, chi])
+        prompts_tok.append(prompt)
+else:
+    prompts_tok = []
+    for prompt in prompts:
+        prompt_tok, _ = int_to_token(
+            np.atleast_2d(prompt), config["base"], do_padding=False
+        )
+        prompts_tok.append(prompt_tok[:, 1:].flatten())
+
+# Define conditions
+
+if args.w0 or args.gs_inv:
+    mult = len(aux_prompts)
+elif args.nflux:
+    mult = aux_prompts_len
+else:
+    mult = 1
+num_per_row = all_hodge_pairs.shape[-2]
+conds = 4 * (np.repeat(np.array(h12_lst), num_per_row) + 1)
+conds = np.repeat(conds, mult)[:, None]
+if args.gs_inv:
+    t_conds = 1 * np.ones(mult * len(h12_lst) * num_per_row)[:, None]
+elif args.nflux:
+    t_conds = 2 * np.ones(np.sum(mult))[:, None]
+else:
+    t_conds = 2 * np.ones(mult * len(h12_lst) * num_per_row)[:, None]
+z_conds = np.repeat(2 * np.array(h12_lst), num_per_row)
+z_conds = np.repeat(z_conds, mult)[:, None]
+conds = np.concatenate([conds, z_conds, t_conds], axis=-1)
+split_tokens = ["<M_START>", "<T_START>"]
+
+###################
+#     Sampling    #
+###################
+
+if args.only_evaluate:
+    assert not args.only_sample, "Both only_evaluate and only_sample were set to True."
+    assert not args.only_plot, "Both only_evaluate and only_plot were set to True."
+    if os.path.isfile(
+        cwd
+        + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}_timing.p"
+    ):
+        samples = pickle.load(
+            open(
+                cwd
+                + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}_timing.p",
+                "rb",
+            )
+        )
+    else:
+        raise FileNotFoundError(
+            f"only_evaluate was set to True but couldn't find samples at {cwd}/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p"
+        )
+elif not args.only_plot:
+    # Maximum length of samples
+    samples_lst = []
+    print(f"Sampling...")
+    time0 = time.time()
+    for i, prompt in enumerate(tqdm(prompts_tok)):
+        samples = sample(
+            state=state,
+            model_type=config["model"],
+            num_samples=args.num_samples,
+            max_len=max_len,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            sampling_temp=args.sampling_temp,
+        )
+        samples_lst.append(samples)
+    # WARNING: This does not return unique values
+
+    print(f"Processing samples...")
+    jax.config.update("jax_enable_x64", True)
+    samples = process_samples(samples_lst, tokenizer, conds, split_tokens)
+    time1 = time.time()
+    print(time1-time0)
+if args.only_sample:
+    print(f"Saving...")
+    pickle.dump(
+        samples,
+        open(
+            cwd
+            + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p",
+            "wb",
+        ),
+    )
+    exit()
+
+# DEBUG: CLEAR CACHES
+jax.clear_caches()
+###################
+#    Evaluation   #
+###################
+
+
+
+if not args.only_plot:
+    fluxes_train_dict = {}
+    mean_validity = []
+    if args.produce_latex:
+        log_dict_all_pairs = {}
+    if args.nflux or args.w0 or args.gs_inv:
+        valid_aux = {}
+    if args.save_valid:
+        assert args.single is not None, "--save_valid only supported for --single."
+        valid_dict = {}
+    print(f"Validating...")
+    time0 = time.time()
+    # Needed since N_flux prompts have different sizes
+    if args.nflux:
+        start_idx = 0
+    for k in range(len(all_hodge_pairs)):
+        h12 = all_hodge_pairs[k][0][0]
+        # Load original training data
+        fluxes_train = jnp.load(
+            raw_data_paths[h12],
+            mmap_mode="r",
+        )
+        training_data = set(map(tuple, np.array(fluxes_train)))
+        for i in range(len(all_hodge_pairs[k])):
+
+            # Print header for geometry
+            print("##################################")
+            print(f"Prompted geometry: {all_hodge_pairs[k][i]}")
+
+            # Check all geometries with the same h12 for each prompt
+            if args.mod or args.topo:
+                num_valid_total = 0
+                fluxes_prev = set()
+                print(f"Num samples: {len(samples[k * 5 + i][0])}")
+                log_dict = {}
+
+            for j in range(len(all_hodge_pairs[k])):
+                if (args.single or args.nflux or args.w0 or args.gs_inv) and not np.all(
+                    all_hodge_pairs[k][j] == all_hodge_pairs[k][i]
+                ):
+                    continue
+                # Prepare dict for console output
+                out = {}
+                geometry_key = f"{all_hodge_pairs[k][j][0]} {all_hodge_pairs[k][j][1]}"
+                out["geometry"] = geometry_key
+                # Prepare model
+                model_ID = geometry_log[geometry_key]["model_ID"]
+                model = jvc.FluxVacuaFinder(
+                    h12=h12, model_ID=model_ID, maximum_degree=10
+                )
+                # Needed for compatibility with older checkpoints
+                if args.RUN_ID <= 35:
+                    model = to_old_a_matrix(model)
+
+                if args.w0 or args.gs_inv:
+                    len_aux_iter = len(aux_prompts)
+                elif args.nflux:
+                    len_aux_iter = model.Q()
+                else:
+                    len_aux_iter = 1
+                for l in range(len_aux_iter):
+                    if args.nflux and (l + 1) % 100 == 0:
+                        jax.clear_caches()
+                    if args.mod or args.topo:
+                        samples_iter = samples[k * 5 + i].copy()
+                    elif args.nflux:
+                        idx = start_idx + l
+                        samples_iter = samples[idx]
+                    else:
+                        if (
+                            args.gs_inv
+                            and (l + 1) % 10 == 0
+                            and all_hodge_pairs[k][j][0] == 5
+                        ):
+                            jax.clear_caches()
+                        idx = (k * 5 + i) * len(aux_prompts) + l
+                        samples_iter = samples[idx]
+                    if args.gs_inv:
+                        gs_inv = int(prompts[idx, -1])
+                    else:
+                        gs_inv = None
+                    if samples_iter is not None:
+                        fluxes, moduli, tau = convert_samples_to_data(
+                            samples_iter, args.discr, gs_inv
+                        )
+                    else:
+                        fluxes = None
+
+                    if fluxes is not None:
+                        idx_samples = jnp.arange(len(fluxes))
+                        fluxes, moduli, tau, idx_samples, out = validate_vacua(
+                            fluxes,
+                            moduli,
+                            tau,
+                            idx_samples,
+                            model,
+                            out,
+                            args.tol,
+                            use_scipy,
+                            args.plot_trajectory,
+                            args.debug or args.debug_deep,
+                            args.debug_deep,
+                        )
+
+                    else:
+                        out["valid"] = 0
+                        out["valid_unique"] = 0
+                    mean_validity.append(out["valid_unique"])
+                    if fluxes is not None:
+                        if args.nflux:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {
+                                "dist": model.tadpole(fluxes),
+                                "validity": out["valid_unique"],
+                            }
+                        if args.w0:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {
+                                "dist": jnp.abs(
+                                    model.superpotential_gauge_invariant(
+                                        moduli, tau, fluxes
+                                    )
+                                ),
+                                "validity": out["valid_unique"],
+                            }
+                        if args.gs_inv:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {"dist": jnp.imag(tau), "validity": out["valid_unique"]}
+
+                        # Check if in training data
+                        fluxes_np = np.array(fluxes)
+                        num_in_train_data = sum(
+                            tuple(row) in training_data for row in fluxes_np
+                        )
+
+                        if args.produce_latex:
+                            log_dict[geometry_key] = {
+                                "valid": out["valid_unique"],
+                                "in_train": num_in_train_data,
+                            }
+                        out["num_in_train_data"] = num_in_train_data
+
+                        # Update genuinely new solutions
+                        if (args.mod or args.topo) and not args.single:
+                            num_new = 0
+                            for idx_sample in np.array(idx_samples):
+                                if idx_sample not in fluxes_prev:
+                                    fluxes_prev.add(idx_sample)
+                                    num_new += 1
+                            num_valid_total += num_new
+
+                        if args.save_valid and np.all(
+                            all_hodge_pairs[k][j] == all_hodge_pairs[k][i]
+                        ):
+                            valid_dict[geometry_key] = {
+                                "fluxes": fluxes,
+                                "moduli": moduli,
+                                "tau": tau,
+                            }
+                    else:
+                        if args.produce_latex:
+                            log_dict[geometry_key] = {"valid": 0, "in_train": 0}
+                    # Print console output
+                    if args.nflux or args.w0 or args.gs_inv:
+                        aux = prompts[idx][-1]
+                    else:
+                        aux = None
+                    print_console_output(out, aux, args.verbose)
+                if args.nflux:
+                    start_idx = idx + 1
+
+                if args.nflux or args.w0 or args.gs_inv:
+                    jax.clear_caches()
+
+            if args.produce_latex:
+                log_dict.update({"total valid": num_valid_total})
+                log_dict_all_pairs[
+                    f"{all_hodge_pairs[k][i][0]} {all_hodge_pairs[k][i][1]}"
+                ] = log_dict
+
+            if (args.mod or args.topo) and not args.single:
+                print("------------------------")
+                print(f"Total valid: {num_valid_total}")
+                jax.block_until_ready(fluxes_prev)
+                del fluxes_prev
+            jax.clear_caches()
+        jax.block_until_ready(fluxes_train)
+        del fluxes_train
+    if args.nflux or args.w0 or args.gs_inv:
+        if args.nflux:
+            file_str = "nflux"
+        if args.w0:
+            file_str = "w0"
+        if args.gs_inv:
+            file_str = "gs_inv"
+        if not os.path.isfile(
+            cwd
+            + f"/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p"
+        ):
+            pickle.dump(
+                valid_aux,
+                open(
+                    cwd
+                    + f"/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p",
+                    "wb",
+                ),
+            )
+        else:
+            raise FileExistsError(
+                f"Tried to save sample distributions at {cwd}/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p. File already exists."
+            )
+    if args.single:
+        print("------------------------")
+        print(
+            f"Mean validity: {jnp.mean(jnp.array(mean_validity)*100.)/float(args.num_samples)}"
+        )
+        print("------------------------")
+else:
+    if args.nflux:
+        file_str = "nflux"
+    elif args.w0:
+        file_str = "w0"
+    elif args.gs_inv:
+        file_str = "gs_inv"
+    else:
+        raise NotImplementedError(
+            "only_plot with other option than --nflux --gs_inv or --w0 not yet implemented."
+        )
+    valid_aux = pickle.load(
+        open(
+            cwd
+            + f"/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p",
+            "rb",
+        )
+    )
+
+time1 = time.time()
+print(time1-time0)
+
+if args.produce_latex:
+    write_latex_table(
+        args.RUN_ID, all_hodge_pairs, log_dict_all_pairs, args.num_samples
+    )
+if args.nflux:
+    plot_args = (
+        r"$N_{\rm flux}$",
+        f"nflux_dist_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}",
+    )
+    discr = None
+    aux_prompts = aux_prompts_len
+if args.w0:
+    plot_args = (
+        r"$|W_0|$",
+        f"w0_dist_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}",
+    )
+    discr = args.discr
+    aux_prompts = len(aux_prompts)
+if args.gs_inv:
+    plot_args = (
+        r"$1/g_s$",
+        f"gs_inv_dist_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}",
+    )
+    discr = args.discr
+    aux_prompts = len(aux_prompts)
+if args.nflux or args.w0 or args.gs_inv:
+    # plot_hist(
+    #     all_hodge_pairs,
+    #     prompts,
+    #     aux_prompts,
+    #     valid_aux,
+    #     plot_args[0],
+    #     plot_args[1],
+    #     discr,
+    # )
+    plot_cont(
+        all_hodge_pairs,
+        prompts,
+        aux_prompts,
+        valid_aux,
+        plot_args[0],
+        plot_args[1],
+        discr,
+    )
+if args.save_valid:
+    assert (
+        not args.only_plot
+    ), "Both save_valid and only_plot have been selected. No valid samples that can be saved are available."
+
+    if not os.path.isfile(
+        cwd
+        + f"/data/valid/valid_samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p"
+    ):
+        pickle.dump(
+            valid_dict,
+            open(
+                cwd
+                + f"/data/valid/valid_samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p",
+                "wb",
+            ),
+        )
+    else:
+        raise FileExistsError(
+            f"Tried to save sample distributions at {cwd}//data/valid/valid_samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p. File already exists."
+        )
