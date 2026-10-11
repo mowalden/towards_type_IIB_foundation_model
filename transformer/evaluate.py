@@ -102,9 +102,6 @@ with open(geometry_log_path, "rb") as f:
     geometry_log = pickle.load(f)
 
 if args.w0:
-    assert (
-        not args.produce_latex
-    ), "--w0 and produce_latex were set. Not yet supported for --w0."
     prompt_with_w0 = []
     aux_prompts = np.array([1.1])
     for prompt in prompts:
@@ -132,9 +129,6 @@ if args.nflux:
     prompts = np.concatenate(prompt_with_nflux, axis=0)
 
 if args.gs_inv:
-    assert (
-        not args.produce_latex
-    ), "--gs_inv and produce_latex were set. Not yet supported for --gs_inv."
     prompt_with_gs_inv = []
     aux_prompts = np.arange(4.0)
     for prompt in prompts:
