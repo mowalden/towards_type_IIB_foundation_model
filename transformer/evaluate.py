@@ -35,12 +35,13 @@ parser.add_argument("--tol", type=float, default=1e-10)
 parser.add_argument("--sampling_temp", type=float, default=0.6)
 parser.add_argument("--discr", type=float, default=10.0)
 parser.add_argument("--only_sample", action="store_true")
+parser.add_argument("--samples_file", type=str)
 parser.add_argument("--only_evaluate", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--use_newton", action="store_true")
 parser.add_argument("--save_valid", action="store_true")
 
-
+cwd = os.getcwd()
 args = parser.parse_args()
 
 assert (
@@ -50,6 +51,15 @@ assert (
     np.sum([args.mod, args.nflux, args.w0, args.gs_inv]) == 1
 ), "Invalid option set. Needs to be --mod --nflux --gs_inv OR --w0."
 
+if args.only_evaluate:
+    assert(args.samples_file is not None, "--only_evaluate is set but --samples_file is None.")
+if args.only_sample: 
+    assert(args.samples_file is not None, "--only_sample is set but --samples_file is None.")
+    if os.path.isfile(
+        cwd
+        + f"/data/samples/{args.samples_file}.p"
+    ):
+        raise(FileExistsError(f"--samples_file is {args.samples_file} but file already exists."))
 
 # Configure JAX compilation cache
 #jax.config.update("jax_compilation_cache_max_size", int(3e10))
@@ -57,7 +67,6 @@ assert (
 ###################
 #   DEFINITIONS   #
 ###################
-cwd = os.getcwd()
 geometry_log_path = cwd + "/data/data_multiple/geometry_log_degree_10.p"
 
 use_scipy = not args.use_newton
@@ -178,18 +187,18 @@ if args.only_evaluate:
     assert not args.only_sample, "Both only_evaluate and only_sample were set to True."
     if os.path.isfile(
         cwd
-        + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p"
+        + f"/data/samples/{args.samples_file}.p"
     ):
         samples = pickle.load(
             open(
                 cwd
-                + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p",
+                + f"/data/samples/{args.samples_file}.p",
                 "rb",
             )
         )
     else:
         raise FileNotFoundError(
-            f"only_evaluate was set to True but couldn't find samples at {cwd}/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p"
+            f"only_evaluate was set to True but couldn't find samples at {cwd}/data/samples/{args.samples_file}.p"
         )
 else:
     # Maximum length of samples
@@ -220,7 +229,7 @@ if args.only_sample:
         samples,
         open(
             cwd
-            + f"/data/samples/samples_run_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}_temp_{int(10*args.sampling_temp)}.p",
+            + f"/data/samples/{args.samples_file}.p",
             "wb",
         ),
     )
