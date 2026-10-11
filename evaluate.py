@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pickle
 from data_scripts.tokenizer_utils import int_to_token
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import jaxvacua as jvc  # type: ignore
 from data_scripts.tokenizer_utils import (
     hodge_numbers_to_token,
@@ -219,7 +219,7 @@ else:
     jax.config.update("jax_enable_x64", True)
     samples = process_samples(samples_lst, tokenizer, conds, split_tokens)
     time1 = time.time()
-    print(time1-time0)
+    print(f"Sampling time in seconds (including processing): {np.round(time1-time0, 1)}")
 if args.only_sample:
     print(f"Saving...")
     pickle.dump(
@@ -442,6 +442,6 @@ if args.single:
 
 
 time1 = time.time()
-print(time1-time0)
+print(f"Evaluation time in seconds: {np.round(time1-time0, 1)}")
 
 
