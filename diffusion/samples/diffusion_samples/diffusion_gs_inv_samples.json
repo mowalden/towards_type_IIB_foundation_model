@@ -1,0 +1,146 @@
+{
+  "checkpoint": "/content/towards_type_IIB_foundation_model/diffusion/checkpoints/gs_grpo_best.pt",
+  "mode": "gs_inv",
+  "observable": "g_s",
+  "physical_target": 0.25,
+  "hodge_pairs_h12_h11": [
+    [
+      2,
+      120
+    ],
+    [
+      2,
+      128
+    ],
+    [
+      2,
+      132
+    ],
+    [
+      2,
+      144
+    ],
+    [
+      2,
+      272
+    ],
+    [
+      3,
+      99
+    ],
+    [
+      3,
+      107
+    ],
+    [
+      3,
+      115
+    ],
+    [
+      3,
+      119
+    ],
+    [
+      3,
+      243
+    ],
+    [
+      4,
+      98
+    ],
+    [
+      4,
+      118
+    ],
+    [
+      4,
+      122
+    ],
+    [
+      4,
+      130
+    ],
+    [
+      4,
+      142
+    ],
+    [
+      5,
+      89
+    ],
+    [
+      5,
+      149
+    ],
+    [
+      5,
+      153
+    ],
+    [
+      5,
+      165
+    ],
+    [
+      5,
+      213
+    ]
+  ],
+  "geometry_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "num_samples_per_geometry": 1000,
+  "batch_size": 64,
+  "seed": 90261001,
+  "prompt_seeds": [
+    90261001,
+    90261002,
+    90261003,
+    90261004,
+    90261005,
+    90261006,
+    90261007,
+    90261008,
+    90261009,
+    90261010,
+    90261011,
+    90261012,
+    90261013,
+    90261014,
+    90261015,
+    90261016,
+    90261017,
+    90261018,
+    90261019,
+    90261020
+  ],
+  "sampler": "confidence",
+  "num_timesteps": null,
+  "mask_schedule": "linear",
+  "time_conditioning": "continuous",
+  "temperature": 0.4,
+  "guidance_scale": 2.0,
+  "device": "cuda",
+  "torch_version": "2.12.0+cu130",
+  "discr": 10.0,
+  "initializer_encoding": "round(discr * physical_coordinate)",
+  "tau_imaginary_from_prompt": 4.0
+}
